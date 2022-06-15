@@ -1,0 +1,100 @@
+#NA12878
+https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/NA12878/Garvan_NA12878_HG001_HiSeq_Exome/
+
+#HG38 for deepvariant
+curl ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz | gunzip > reference/GRCh38_no_alt_analysis_set.fasta
+
+curl ftp://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/001/405/GCA_000001405.15_GRCh38/seqs_for_alignment_pipelines.ucsc_ids/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.fai > reference/GRCh38_no_alt_analysis_set.fasta.fai
+
+
+#Cambridge University Documentation
+
+#Download Reference Genome
+#download hg38 chromosome fasta file
+wget http://hgdownload.cse.ucsc.edu/goldenPath/hg38/bigZips/hg38.chromFa.tar.gz
+
+# unzip and concatenate chromosome and contig fasta files
+tar zvfx hg38.chromFa.tar.gz
+cat *.fa > hg38.fa
+rm chr*.fa
+
+#Create Reference Index
+# bwa index [-a bwtsw|is]   index_prefix reference.fasta
+bwa index -p hg38bwaidx -a bwtsw hg38.fa
+
+# -p index name (change this to whatever you want)
+# -a index algorithm (bwtsw for long genomes and is for short genomes)
+
+#Align to Reference Genome
+# aligning paired end reads
+bwa aln -t 4 hg38bwaidx NIST7035_TAAGGCGA_L001_R1_001.fastq.gz > sequence1.sai
+bwa aln -t 4 hg38bwaidx NIST7035_TAAGGCGA_L001_R2_001.fastq.gz > sequence2.sai
+bwa sampe hg38bwaidx sequence1.sai sequence2.sai NIST7035_TAAGGCGA_L001_R1_001.fastq.gz NIST7035_TAAGGCGA_L001_R2_001.fastq.gz > sequence12_pe.sam
+
+#Generate BAM files
+samtools view -bT hg38.fa sequence12_pe.sam > sequence12.bam # when no header
+samtools view -bS sequence12_pe.sam > sequence12.bam # when SAM header present
+
+samtools sort -O bam -o sequence12.sorted.bam -T temp sequence12.bam # sort by coordinate to streamline data processing
+
+samtools index sequence12.sorted.bam # a position-sorted BAM file can also be indexed (.bam.bai verir)
+
+#deepvariant
+docker run 
+-v "/home/emerald/chroms":"/input" 
+-v "/home/emerald/chroms_output":"/output" 
+-v "/home/emerald/reference":"/reference" 
+google/deepvariant:"1.1.0" 
+/opt/deepvariant/bin/run_deepvariant 
+--model_type WES 
+--ref /reference/GRCh38_no_alt_analysis_set.fasta 
+--reads /input/sequence12.sorted.bam 
+--regions /input/nexterarapidcapture_expandedexome_targetedregions.bed 
+--output_vcf /output/NA12878.output.vcf.gz 
+--output_gvcf /output/NA12878.output.g.vcf.gz 
+--num_shards 4 
+--intermediate_results_dir /output/intermediate_results_dir
+
+
+#VEP
+docker run -t -i 
+-v /home/emerald/vep_data:/opt/vep/.vep
+ensemblorg/ensembl-vep 
+./vep 
+--cache 
+--af_gnomad 
+--offline 
+--format vcf 
+--vcf 
+--force_overwrite 
+--dir_cache /opt/vep/.vep/ 
+--dir_plugins /opt/vep/.vep/Plugins/ 
+--input_file /opt/vep/.vep/input/NA12878.output.vcf 
+--output_file /opt/vep/.vep/output/NA12878_VEP_output.vcf 
+--plugin dbNSFP,/opt/vep/.vep/Plugins/dbNSFP4.1a_grch38.gz,genename,Ensembl_geneid,Ensembl_transcriptid,HGVSc_ANNOVAR,SIFT_score,Polyphen2_HDIV_score 
+--plugin gnomADc,/opt/vep/.vep/Plugins/gnomADc.gz 
+--plugin Mastermind,/opt/vep/.vep/Plugins/mastermind_cited_variants_reference-2021.04.02-grch38.vcf.gz
+
+
+#Filter_VEP
+docker run -t -i 
+-v /home/emerald/vep_data:/opt/vep/.vep 
+ensemblorg/ensembl-vep 
+./filter_vep 
+--format vcf 
+-i /opt/vep/.vep/output/NA12878_VEP_output.vcf 
+-o /opt/vep/.vep/output/NA12878_VEP_filtered.vcf 
+--filter "(gnomAD_AF < 0.05 or not gnomAD_AF) and (IMPACT is HIGH)" 
+--force_overwrite
+
+
+#VcfProcessor
+java -jar /home/emerald/Downloads/VCFProcessor.jar 
+FilterGeneCsqLevel 
+--vcf NA12878_VEP_filtered.vcf 
+--genes dd_genes.txt 
+--csq empty 
+--out dd_gene_result.vcf
+
+
+12391---201---6
